@@ -57,8 +57,8 @@ func create(c echo.Context) error {
 	}
 
 	auth := mailer.Authentication{
-		Username: "unchainedos@mail.ru",
-		Password: "jnGAdXF1a8hA0QyZOBxr",
+		Username: envFile["EMAIL"],
+		Password: envFile["PASSWORD"],
 		Host:     "smtp.mail.ru",
 		Port:     "587",
 	}
@@ -109,6 +109,10 @@ func delete(c echo.Context) error {
 	return c.String(200, "congrats and welcome to our community")
 }
 
+func auth(c echo.Context) error {
+	return c.String(200, "adsfasfd")
+}
+
 func WithDB(db *pgxpool.Pool) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -118,8 +122,11 @@ func WithDB(db *pgxpool.Pool) echo.MiddlewareFunc {
 	}
 }
 
+var (
+	envFile, _ = godotenv.Read(".env")
+)
+
 func main() {
-	envFile, _ := godotenv.Read(".env")
 
 	pool, err := pgxpool.New(context.Background(), envFile["DB_UL"])
 	if err != nil {
@@ -140,7 +147,7 @@ func main() {
 	// delete user : DELETE
 	e.DELETE("/user", delete)
 	// auth(JWT) :POST
-	e.POST("/user/auth")
+	e.POST("/user/auth", auth)
 	// read user : GET
 	e.GET("/user/:id", read)
 
