@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"strconv"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
@@ -65,7 +68,7 @@ func create(c echo.Context) error {
 	sender := mailer.NewPlainAuth(&auth)
 
 	message := mailer.NewMessage("Hello World", fmt.Sprintf("<a href='http://localhost:1234/user/activate?id=%d'>activate your account</a>", id))
-	message.SetTo([]string{"unchainedos@mail.ru"})
+	message.SetTo([]string{x["email"].(string)})
 
 	sender.SendMail(message)
 
@@ -103,14 +106,91 @@ func delete(c echo.Context) error {
 	id := c.QueryParam("id")
 	_, err := pool.Exec(context.Background(), "delete from users where id = $1", id)
 	if err != nil {
-		log.Fatal("error happened during deleting account")
+		log.Print("error happened during deleting account")
 		return c.String(503, "error happened during deleting account")
 	}
 	return c.String(200, "congrats and welcome to our community")
 }
 
 func auth(c echo.Context) error {
-	return c.String(200, "adsfasfd")
+	pool := c.Get("db").(*pgxpool.Pool)
+	key := []byte(envFile["JWT_KEY"])
+	body := getJSONRawBody(c)
+
+	hasher := sha256.New()
+	l := []byte(body["password"].(string))
+	hasher.Write(l)
+	hsh := hasher.Sum(nil)
+	body["password"] = hex.EncodeToString(hsh)
+
+	var result int
+	err := pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM users WHERE password=$1 AND username=$2", body["password"], body["username"]).Scan(&result)
+	if err != nil {
+		log.Print(err)
+		return c.String(503, "error happened during work with db")
+	}
+	if result == 0 {
+		return c.String(401, "Invalid Login or Password")
+	}
+
+	t := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"username": body["username"],
+	})
+	s, _ := t.SignedString(key)
+
+	cookie := new(http.Cookie)
+	cookie.Name = "token"
+	cookie.Value = s
+	cookie.Expires = time.Now().Add(30 * 24 * time.Hour)
+	c.SetCookie(cookie)
+	return c.String(200, "you have been authed")
+}
+
+func AuthMidleWare(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		token, err := c.Cookie("token")
+		if err != nil {
+			log.Printf("No token cookie: %v", err)
+			return c.String(403, "forbidden")
+		}
+
+		isValid, err := verifyToken(token.Value)
+		if err != nil {
+			log.Printf("Token validation error: %v", err)
+			return c.String(403, "forbidden")
+		}
+		if !isValid {
+			log.Printf("Invalid token: %s", token.Value)
+			return c.String(403, "forbidden")
+		}
+
+		return next(c)
+	}
+}
+
+func verifyToken(tokenString string) (bool, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// Проверяем, что алгоритм подписи HMAC (HS256/HS384/HS512)
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(envFile["JWT_KEY"]), nil
+	})
+
+	if err != nil {
+		return false, err
+	}
+
+	return token.Valid, nil
+}
+
+func quit(c echo.Context) error {
+	cookie := new(http.Cookie)
+	cookie.Name = "token"
+	cookie.Value = ""
+	cookie.Path = "/user"
+	c.SetCookie(cookie)
+	return c.String(200, "good bye")
 }
 
 func WithDB(db *pgxpool.Pool) echo.MiddlewareFunc {
@@ -130,11 +210,11 @@ func main() {
 
 	pool, err := pgxpool.New(context.Background(), envFile["DB_UL"])
 	if err != nil {
-		log.Fatal("unable to connect to db")
+		log.Print("unable to connect to db")
 	}
 	err = pool.Ping(context.Background())
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
 	}
 
 	e := echo.New()
@@ -145,11 +225,12 @@ func main() {
 	e.GET("/user/activate", activate)
 	// update any data about user : -- many handlers so i will do it later --
 	// delete user : DELETE
-	e.DELETE("/user", delete)
+	e.DELETE("/user", delete, AuthMidleWare)
 	// auth(JWT) :POST
 	e.POST("/user/auth", auth)
+	e.POST("/user/quit", quit)
 	// read user : GET
-	e.GET("/user/:id", read)
+	e.GET("/user/:id", read, AuthMidleWare)
 
 	e.Start(":1234")
 }
