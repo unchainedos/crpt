@@ -5,13 +5,14 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
 	"github.com/segmentio/kafka-go"
 )
@@ -30,9 +31,12 @@ func getJSONRawBody(c echo.Context) map[string]interface{} {
 }
 
 func testSolution(c echo.Context) error {
+	db := c.Get("db").(*pgxpool.Pool)
+
 	body := getJSONRawBody(c)
 	id := body["id"].(string)
 	code := body["code"].(string)
+
 	os.Chdir(id)
 	timestring := time.Now().String()
 	s := sha1.New()
@@ -42,12 +46,18 @@ func testSolution(c echo.Context) error {
 	os.WriteFile(name, []byte(code), 0755)
 	cmd := exec.Command("python", name)
 	out, err := cmd.Output()
-	fmt.Print(out)
 	if err != nil {
 		os.Remove(name)
 		return c.String(200, string(out))
 	}
 	os.Remove(name)
+
+	_, err = db.Exec(context.Background(), "update quests set tries = tries + 1 where id = $1", id)
+	if err != nil {
+		log.Print("err during updating tries")
+		return c.String(503, "unable to update tries at db")
+	}
+
 	return c.String(200, string(out))
 }
 
@@ -76,10 +86,27 @@ var (
 	})
 )
 
+var (
+	envFile, _ = godotenv.Read(".env")
+)
+
+func WithDB(db *pgxpool.Pool) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			c.Set("db", db)
+			return next(c)
+		}
+	}
+}
+
 func main() {
+	pool, err := pgxpool.New(context.Background(), envFile["DB_UL"])
+	if err != nil {
+		log.Print("unable to start a service")
+	}
 	// go( --> test solution )
 	e := echo.New()
-	e.POST("/checkSolution", testSolution)
+	e.POST("/checkSolution", testSolution, WithDB(pool))
 	go addNewQuest()
 	e.Start(":3423")
 }

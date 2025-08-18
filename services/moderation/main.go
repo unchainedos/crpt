@@ -159,7 +159,7 @@ func posttask(c echo.Context) error {
 	}
 
 	writermd.WriteMessages(context.Background(), kafka.Message{
-		Value: []byte(md),
+		Value: []byte(strconv.Itoa(id) + "|-&&&-|" + md),
 	})
 	writercode.WriteMessages(context.Background(), kafka.Message{
 		Value: []byte(strconv.Itoa(id) + "|-&&&-|" + code),
